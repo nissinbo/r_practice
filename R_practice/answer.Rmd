@@ -1,0 +1,213 @@
+---
+title: "Rで解析練習 解答編"
+author: "Tomoki Nishikawa"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    theme: cosmo
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 概要
+
+- レセプトデータ解析で使う基礎的なテクニックを集めた練習問題
+    - 下に行くほど難しいです
+    - 新4年生がやることを想定だが、5,6年生でも勉強になるはず
+
+# 準備(パッケージ読み込み)
+
+- 以下のコードを事前に実行しといてください
+
+```{r package, class.source="fold-show", message=FALSE, warning=FALSE}
+library(tidyverse); library(magrittr); library(data.table); library(lubridate)
+```
+
+# データ読み込み
+
+- 「data」フォルダ内の以下3つのcsvファイルを読み込んでください
+  - patient.csv
+  - disease.csv
+  - drug.csv
+
+```{r}
+DATAPATH <- "./data/"
+patient <- fread(paste0(DATAPATH, "patient.csv"), data.table = FALSE)
+disease <- fread(paste0(DATAPATH, "disease.csv"), data.table = FALSE)
+drug <- fread(paste0(DATAPATH, "drug.csv"), data.table = FALSE)
+```
+
+# 並べ替え
+
+- patientをstart_dateの降順に並べ替えて、patient2というデータフレームに代入してください
+
+```{r}
+patient2 <- patient %>% 
+  arrange(start_date)
+```
+
+# フィルタ
+
+- patientのうちgenderが「F」である人を抜き出し、patient_femaleというデータフレームに代入してください
+
+```{r}
+patient_female <- patient %>% 
+  filter(gender == "F")
+```
+
+# 集計
+
+- patientのageの平均値を、genderごとに算出してください
+- 結果の例↓
+
+```{r}
+patient %>% 
+  group_by(gender) %>% 
+  summarise(mean_age = mean(age), .groups = "drop")
+```
+
+# 列名変更
+
+- drugのdate列をdrug_dateに変更し、drugを上書きしてください
+- diseaseのdate列をdisease_dateに変更し、diseaseを上書きしてください
+
+```{r}
+drug <- drug %>% 
+  rename(drug_date = date)
+disease <- disease %>% 
+  rename(disease_date = date)
+
+# 以下別解
+drug <- drug %>% 
+  set_colnames(c("id", "drug_date", "atccode", "dose_amount"))
+disease <- disease %>% 
+  set_colnames(c("id", "disease_date", "icd10code"))
+```
+
+# 重複削除
+
+- drugのうち、各患者の初回処方日の行のみ抽出してdrug_firstというデータフレームに代入してください
+
+```{r}
+drug_first <- drug %>% 
+  arrange(id, drug_date) %>% 
+  distinct(id, .keep_all = TRUE)
+
+# 別解
+drug_first <- drug %>% 
+  arrange(id, drug_date) %>% 
+  group_by(id) %>% 
+  filter(row_number() == 1) %>% 
+  ungroup()
+```
+
+# 結合 & 集計再び
+
+- idをキーに、drugの横にpatientのgender列を結合して、drug_genderというデータフレームに代入してください
+
+```{r}
+drug_gender <- drug %>% 
+  left_join(patient %>% select(id, gender), "id")
+```
+
+- 次に、genderごとのdose_amount合計、平均、中央値、最大、最小を算出してください
+
+```{r}
+drug_gender %>% 
+  group_by(gender) %>% 
+  summarise(sum_dose = sum(dose_amount), 
+            mean_dose = mean(dose_amount), 
+            median_dose = median(dose_amount), 
+            max_dose = max(dose_amount), 
+            min_dose = min(dose_amount))
+```
+
+# 部分一致によるフィルタ
+
+- drugのうち、atccodeに「C」という文字が含まれる行を抽出しdrug_cというデータフレームに代入してください
+
+```{r}
+drug_c <- drug %>% 
+  filter(str_detect(atccode, "C"))
+```
+
+# 列作成
+
+- diseaseに新しい列「event」を作成します。eventには、icd10codeが「C03」である場合は1を、違う場合は0を代入してください(characterで)。列を追加したデータフレームをdisease_eventという名前に代入してください。
+
+```{r}
+disease_event <- disease %>% 
+  mutate(event = if_else(icd10code == "C03", "1", "0"))
+```
+
+# 観察期間算出
+
+- まずdisease_eventの「event」列が1の行のみをフィルタし、重複削除によってidごとに最も早いeventのみを残してください。これをdisease_eventに上書きしてください。
+
+```{r}
+disease_event <- disease_event %>% 
+  filter(event == "1") %>% 
+  arrange(id, disease_date) %>% 
+  distinct(id, .keep_all = TRUE)
+```
+
+- idをキーに、patientの右にdisease_eventを結合したものをpatient_dis_eventというデータフレームに代入してください。
+- 更にpatient_dis_eventの「event」列のうち欠損(NA)であるところにcharacterで0を入れ、patient_dis_eventを上書きしてください。
+
+```{r}
+patient_dis_event <- patient %>% 
+  left_join(disease_event, "id") %>% 
+  mutate(event = if_else(is.na(event), "0", event))
+```
+
+- patient_dis_patientを用いて以下の条件で新しい列「time」を
+り、patient_timeというデータフレームに代入してください。
+    - 「event」が1の場合はstart_dateからdisease_dateまでの日数を入れる
+    - 「event」が0の場合はstart_dateからend_dateまでの日数を入れる
+    
+- 日付計算やそれにまつわるデータの型は少し複雑です。初心者のうちは挙動が想定通りか確認しましょう。
+
+```{r}
+patient_time <- patient_dis_event %>% 
+  mutate(across(c(start_date, end_date, disease_date), ~ymd(.))) %>% 
+  mutate(time = if_else(event == "1", 
+                        disease_date - start_date, 
+                        end_date - start_date)) %>% 
+  mutate(time = as.numeric(time)) # そのままでもいいが一応数値として扱う
+```
+
+# 人年法
+
+- patient_timeより、genderごとに1000人年あたりのイベント数を算出する。
+    - 1000人年当たりの発生率 = 総イベント数 / 総観察期間(日) × 365 × 1000
+    - genderごとに総観察期間と総イベント数を算出し、上の式に沿って計算
+
+```{r}
+patient_time %>% 
+  group_by(gender) %>% 
+  summarise(event_total = sum(event == "1"), 
+            time_total = sum(time), 
+            `rate_per_thousand` = event_total * 365 * 1000 / time_total)
+```
+
+
+# プロット(自力でできる必要はない)
+
+- patient_timeのgenderごとに、time, eventを用いてカプランマイヤー(Kaplan-Meier)曲線を書いてみてください。
+    - survival, survminerを使います。
+    - eventをnumericにする必要あり
+
+```{r, message=FALSE, warning=FALSE}
+library(survival); library(survminer)
+
+survfit(Surv(time, as.numeric(event)) ~ gender, data = patient_time) %>% 
+  ggsurvplot(data = patient_time)
+```
+
